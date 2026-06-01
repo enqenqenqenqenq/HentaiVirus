@@ -1,9 +1,6 @@
 ﻿using HentaiVirus.Database;
 using System.Windows;
 
-using System.Windows;
-using HentaiVirus.Database;
-
 namespace HentaiVirus
 {
     public partial class MainWindow : Window
