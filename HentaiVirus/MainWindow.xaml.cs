@@ -15,13 +15,22 @@ namespace HentaiVirus
 
         private void AcceptButton_Click(object sender, RoutedEventArgs e)
         {
-            MessageBox.Show("Соглашение принято. Запуск фоновых служб...", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Соглашение принято. Запуск фоновых служб...", "Информация", MessageBoxButton.OK,
+                MessageBoxImage.Information);
 
-            // Инициализация БД
             var dbManager = new DatabaseManager();
             dbManager.InitializeDatabase();
 
-            // TODO: Скрыть окно 
-        }
+            this.Hide();
+
+            System.Threading.Tasks.Task.Run(async () => { await StartCoreEngineAsync(); });
+        }
+
+        private async System.Threading.Tasks.Task StartCoreEngineAsync()
+        {
+            // Точка входа для ядра вируса
+            // TODO: Здесь будет цикл вызова загрузчика и запуска игр
+            await System.Threading.Tasks.Task.CompletedTask;
+        }
     }
 }
