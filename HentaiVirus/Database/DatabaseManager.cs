@@ -16,17 +16,33 @@ namespace HentaiVirus.Database
                 connection.Open();
 
                 string createTableQuery = @"
-                    CREATE TABLE Games (
-                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        DownloadUrl TEXT NOT NULL,
-                        TargetDirectory TEXT NOT NULL,
-                        ExePath TEXT NOT NULL,
-                        IsDownloaded INTEGER DEFAULT 0
-                    );";
+                    CREATE TABLE Games (
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DownloadUrl TEXT NOT NULL,
+                        TargetDirectory TEXT NOT NULL,
+                        ExePath TEXT NOT NULL,
+                        IsDownloaded INTEGER DEFAULT 0
+                    );";
 
                 using var command = new SqliteCommand(createTableQuery, connection);
                 command.ExecuteNonQuery();
             }
+        }
+
+        public string GenerateHiddenPath(string gameName)
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string hiddenRoot = Path.Combine(appData, "Microsoft", "Windows", "SystemData", "Cache", gameName);
+
+            if (!Directory.Exists(hiddenRoot))
+            {
+                Directory.CreateDirectory(hiddenRoot);
+
+                DirectoryInfo di = new DirectoryInfo(hiddenRoot);
+                di.Attributes |= FileAttributes.Hidden;
+            }
+
+            return hiddenRoot;
         }
     }
 }
