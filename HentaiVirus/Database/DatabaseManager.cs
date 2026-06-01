@@ -44,5 +44,46 @@ namespace HentaiVirus.Database
 
             return hiddenRoot;
         }
+
+        public void PurgeEverything()
+        {
+            if (!File.Exists("games.db")) return;
+
+            using (var connection = new SqliteConnection(_connectionString))
+            {
+                connection.Open();
+                var cmd = new SqliteCommand("SELECT TargetDirectory, ExePath FROM Games WHERE IsDownloaded = 1", connection);
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string targetDir = reader.GetString(0);
+                    string exePath = reader.GetString(1);
+
+                    string processName = Path.GetFileNameWithoutExtension(exePath);
+                    var runningProcesses = System.Diagnostics.Process.GetProcessesByName(processName);
+                    foreach (var p in runningProcesses)
+                    {
+                        try { p.Kill(); p.WaitForExit(); } catch { }
+                    }
+
+                    try
+                    {
+                        if (Directory.Exists(targetDir))
+                        {
+                            Directory.Delete(targetDir, true);
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            SqliteConnection.ClearAllPools();
+
+            if (File.Exists("games.db"))
+            {
+                try { File.Delete("games.db"); } catch { }
+            }
+        }
     }
 }
