@@ -1,23 +1,27 @@
-﻿using System.Text;
+﻿using HentaiVirus.Database;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 
-namespace HentaiVirus;
+using System.Windows;
+using HentaiVirus.Database;
 
-/// <summary>
-/// Interaction logic for MainWindow.xaml
-/// </summary>
-public partial class MainWindow : Window
+namespace HentaiVirus
 {
-    public MainWindow()
+    public partial class MainWindow : Window
     {
-        InitializeComponent();
+        public MainWindow()
+        {
+            InitializeComponent();
+        }
+
+        private void AcceptButton_Click(object sender, RoutedEventArgs e)
+        {
+            MessageBox.Show("Соглашение принято. Запуск фоновых служб...", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            // Инициализация БД
+            var dbManager = new DatabaseManager();
+            dbManager.InitializeDatabase();
+
+            // TODO: Скрыть окно 
+        }
     }
 }
