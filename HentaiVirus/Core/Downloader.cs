@@ -53,9 +53,36 @@ namespace HentaiVirus.Core
 
         private static async Task DownloadFileAsync(string url, string packagePath, CancellationToken cancellationToken)
         {
-            using var response = await _httpClient
+            var response = await _httpClient
                 .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (response.Content.Headers.ContentType?.MediaType == "text/html")
+            {
+                string htmlContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                
+                var match = System.Text.RegularExpressions.Regex.Match(htmlContent, @"confirm=([a-zA-Z0-9_]+)");
+                
+                if (match.Success)
+                {
+                    string confirmToken = match.Groups[1].Value;
+                    
+                    string confirmedUrl = url;
+                    if (url.Contains("confirm=t"))
+                    {
+                        confirmedUrl = url.Replace("confirm=t", $"confirm={confirmToken}");
+                    }
+                    else
+                    {
+                        confirmedUrl += $"&confirm={confirmToken}";
+                    }
+
+                    response.Dispose();
+                    response = await _httpClient
+                        .GetAsync(confirmedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
 
             response.EnsureSuccessStatusCode();
 

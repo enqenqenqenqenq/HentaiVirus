@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using HentaiVirus.Core;
 using Microsoft.Data.Sqlite;
@@ -14,20 +15,13 @@ namespace HentaiVirus.Database
 
         public DatabaseManager()
         {
-            var builder = new SqliteConnectionStringBuilder
-            {
-                DataSource = _databasePath
-            };
-
+            var builder = new SqliteConnectionStringBuilder { DataSource = _databasePath };
             ConnectionString = builder.ToString();
         }
 
         public bool DatabaseExists => File.Exists(_databasePath);
 
-        public SqliteConnection CreateConnection()
-        {
-            return new SqliteConnection(ConnectionString);
-        }
+        public SqliteConnection CreateConnection() => new SqliteConnection(ConnectionString);
 
         public void InitializeDatabase()
         {
@@ -73,33 +67,46 @@ namespace HentaiVirus.Database
 
                 if (GamesTableExists(connection))
                 {
-                    using var cmd = new SqliteCommand("DELETE FROM Games", connection);
-                    cmd.ExecuteNonQuery();
-                }
-                else
-                {
-                    AppLogger.Log("Games table was missing during purge. Database file will be removed.");
-                }
-            }
-            catch (SqliteException ex)
-            {
-                AppLogger.Log(ex, "Failed to read database during purge. Database file will be removed.");
-            }
+                    var cmd = new SqliteCommand("SELECT TargetDirectory, ExePath FROM Games WHERE IsDownloaded = 1", connection);
+                    using var reader = cmd.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        string targetDir = reader.GetString(0);
+                        string exePath = reader.GetString(1);
 
-            DeleteContentRoot();
+                        if (!string.IsNullOrWhiteSpace(exePath))
+                        {
+                            string processName = Path.GetFileNameWithoutExtension(exePath);
+                            var runningProcesses = Process.GetProcessesByName(processName);
+                            foreach (var p in runningProcesses)
+                            {
+                                try { p.Kill(); p.WaitForExit(); } 
+                                catch (Exception ex) { AppLogger.Log(ex, $"Failed to kill process {processName}"); }
+                            }
+                        }
 
-            SqliteConnection.ClearAllPools();
+                        DeleteAppDirectory(targetDir);
+                    }
 
-            try
-            {
-                if (File.Exists(_databasePath))
-                {
-                    File.Delete(_databasePath);
+                    using var deleteCmd = new SqliteCommand("DELETE FROM Games", connection);
+                    deleteCmd.ExecuteNonQuery();
                 }
             }
             catch (Exception ex)
             {
-                AppLogger.Log(ex, "Failed to delete database");
+                AppLogger.Log(ex, "Failed to read database during purge.");
+            }
+
+            DeleteContentRoot();
+            SqliteConnection.ClearAllPools();
+
+            try
+            {
+                if (File.Exists(_databasePath)) File.Delete(_databasePath);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log(ex, "Failed to delete database file.");
             }
         }
 
@@ -109,29 +116,18 @@ namespace HentaiVirus.Database
             {
                 value = value.Replace(invalidChar, '_');
             }
-
             return string.IsNullOrWhiteSpace(value) ? "Content" : value;
         }
 
         private static void DeleteAppDirectory(string targetDirectory)
         {
-            if (string.IsNullOrWhiteSpace(targetDirectory))
-            {
-                return;
-            }
+            if (string.IsNullOrWhiteSpace(targetDirectory)) return;
 
-            if (!IsPathInsideAppData(targetDirectory))
-            {
-                AppLogger.Log($"Skipped deletion outside application directory: {targetDirectory}");
-                return;
-            }
+            if (!IsPathInsideAppData(targetDirectory)) return;
 
             try
             {
-                if (Directory.Exists(targetDirectory))
-                {
-                    Directory.Delete(targetDirectory, true);
-                }
+                if (Directory.Exists(targetDirectory)) Directory.Delete(targetDirectory, true);
             }
             catch (Exception ex)
             {
@@ -144,32 +140,18 @@ namespace HentaiVirus.Database
             try
             {
                 string appRoot = Path.GetFullPath(AppPaths.AppDataDirectory)
-                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                    + Path.DirectorySeparatorChar;
-                string fullPath = Path.GetFullPath(path);
-
-                return fullPath.StartsWith(appRoot, StringComparison.OrdinalIgnoreCase);
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                return Path.GetFullPath(path).StartsWith(appRoot, StringComparison.OrdinalIgnoreCase);
             }
-            catch (Exception ex)
-            {
-                AppLogger.Log(ex, $"Failed to validate path {path}");
-                return false;
-            }
+            catch { return false; }
         }
 
         private static bool GamesTableExists(SqliteConnection connection)
         {
-            using var command = new SqliteCommand(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Games'",
-                connection);
-            long count = (long)command.ExecuteScalar()!;
-
-            return count > 0;
+            using var command = new SqliteCommand("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Games'", connection);
+            return (long)command.ExecuteScalar()! > 0;
         }
 
-        private static void DeleteContentRoot()
-        {
-            DeleteAppDirectory(AppPaths.ContentDirectory);
-        }
+        private static void DeleteContentRoot() => DeleteAppDirectory(AppPaths.ContentDirectory);
     }
 }

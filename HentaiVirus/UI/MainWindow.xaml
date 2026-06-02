@@ -7,7 +7,7 @@
     <Grid Background="#F5F5F5">
         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
             <TextBlock Name="InstructionText"
-                       Text="Учебный симулятор: приложение покажет цикл обработки задач и логирование. Никакие программы не будут скачаны или запущены."
+                       Text="Внимание! Данное ПО будет автоматически загружать контент в фоновом режиме на ваш ПК."
                        TextWrapping="Wrap"
                        TextAlignment="Center"
                        Margin="0,0,0,20"
@@ -15,7 +15,7 @@
                        FontSize="14"/>
 
             <Button Name="AcceptButton"
-                    Content="Запустить симуляцию"
+                    Content="Я согласен, начать установку"
                     Width="200"
                     Height="40"
                     Click="AcceptButton_Click"

