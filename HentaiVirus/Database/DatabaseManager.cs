@@ -1,89 +1,175 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
+using HentaiVirus.Core;
 using Microsoft.Data.Sqlite;
 
 namespace HentaiVirus.Database
 {
     public class DatabaseManager
     {
-        private readonly string _connectionString = "Data Source=games.db";
+        private readonly string _databasePath = AppPaths.DatabasePath;
+
+        public string ConnectionString { get; }
+
+        public DatabaseManager()
+        {
+            var builder = new SqliteConnectionStringBuilder
+            {
+                DataSource = _databasePath
+            };
+
+            ConnectionString = builder.ToString();
+        }
+
+        public bool DatabaseExists => File.Exists(_databasePath);
+
+        public SqliteConnection CreateConnection()
+        {
+            return new SqliteConnection(ConnectionString);
+        }
 
         public void InitializeDatabase()
         {
-            if (!File.Exists("games.db"))
-            {
-                using var connection = new SqliteConnection(_connectionString);
-                connection.Open();
+            Directory.CreateDirectory(AppPaths.AppDataDirectory);
 
-                string createTableQuery = @"
-                    CREATE TABLE Games (
-                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        DownloadUrl TEXT NOT NULL,
-                        TargetDirectory TEXT NOT NULL,
-                        ExePath TEXT NOT NULL,
-                        IsDownloaded INTEGER DEFAULT 0
-                    );";
+            using var connection = CreateConnection();
+            connection.Open();
 
-                using var command = new SqliteCommand(createTableQuery, connection);
-                command.ExecuteNonQuery();
-            }
+            const string createTableQuery = @"
+                CREATE TABLE IF NOT EXISTS Games (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    DownloadUrl TEXT NOT NULL,
+                    TargetDirectory TEXT NOT NULL,
+                    ExePath TEXT NOT NULL,
+                    IsDownloaded INTEGER DEFAULT 0
+                );";
+
+            using var command = new SqliteCommand(createTableQuery, connection);
+            command.ExecuteNonQuery();
         }
 
         public string GenerateHiddenPath(string gameName)
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string hiddenRoot = Path.Combine(appData, "Microsoft", "Windows", "SystemData", "Cache", gameName);
+            string safeName = SanitizePathSegment(gameName);
+            string contentPath = Path.Combine(AppPaths.ContentDirectory, safeName);
+            Directory.CreateDirectory(contentPath);
 
-            if (!Directory.Exists(hiddenRoot))
-            {
-                Directory.CreateDirectory(hiddenRoot);
-
-                DirectoryInfo di = new DirectoryInfo(hiddenRoot);
-                di.Attributes |= FileAttributes.Hidden;
-            }
-
-            return hiddenRoot;
+            return contentPath;
         }
 
         public void PurgeEverything()
         {
-            if (!File.Exists("games.db")) return;
-
-            using (var connection = new SqliteConnection(_connectionString))
+            if (!DatabaseExists)
             {
+                DeleteContentRoot();
+                return;
+            }
+
+            try
+            {
+                using var connection = CreateConnection();
                 connection.Open();
-                var cmd = new SqliteCommand("SELECT TargetDirectory, ExePath FROM Games WHERE IsDownloaded = 1", connection);
 
-                using var reader = cmd.ExecuteReader();
-                while (reader.Read())
+                if (GamesTableExists(connection))
                 {
-                    string targetDir = reader.GetString(0);
-                    string exePath = reader.GetString(1);
-
-                    string processName = Path.GetFileNameWithoutExtension(exePath);
-                    var runningProcesses = System.Diagnostics.Process.GetProcessesByName(processName);
-                    foreach (var p in runningProcesses)
-                    {
-                        try { p.Kill(); p.WaitForExit(); } catch { }
-                    }
-
-                    try
-                    {
-                        if (Directory.Exists(targetDir))
-                        {
-                            Directory.Delete(targetDir, true);
-                        }
-                    }
-                    catch { }
+                    using var cmd = new SqliteCommand("DELETE FROM Games", connection);
+                    cmd.ExecuteNonQuery();
+                }
+                else
+                {
+                    AppLogger.Log("Games table was missing during purge. Database file will be removed.");
                 }
             }
+            catch (SqliteException ex)
+            {
+                AppLogger.Log(ex, "Failed to read database during purge. Database file will be removed.");
+            }
+
+            DeleteContentRoot();
 
             SqliteConnection.ClearAllPools();
 
-            if (File.Exists("games.db"))
+            try
             {
-                try { File.Delete("games.db"); } catch { }
+                if (File.Exists(_databasePath))
+                {
+                    File.Delete(_databasePath);
+                }
             }
+            catch (Exception ex)
+            {
+                AppLogger.Log(ex, "Failed to delete database");
+            }
+        }
+
+        private static string SanitizePathSegment(string value)
+        {
+            foreach (char invalidChar in Path.GetInvalidFileNameChars())
+            {
+                value = value.Replace(invalidChar, '_');
+            }
+
+            return string.IsNullOrWhiteSpace(value) ? "Content" : value;
+        }
+
+        private static void DeleteAppDirectory(string targetDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectory))
+            {
+                return;
+            }
+
+            if (!IsPathInsideAppData(targetDirectory))
+            {
+                AppLogger.Log($"Skipped deletion outside application directory: {targetDirectory}");
+                return;
+            }
+
+            try
+            {
+                if (Directory.Exists(targetDirectory))
+                {
+                    Directory.Delete(targetDirectory, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log(ex, $"Failed to delete directory {targetDirectory}");
+            }
+        }
+
+        private static bool IsPathInsideAppData(string path)
+        {
+            try
+            {
+                string appRoot = Path.GetFullPath(AppPaths.AppDataDirectory)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    + Path.DirectorySeparatorChar;
+                string fullPath = Path.GetFullPath(path);
+
+                return fullPath.StartsWith(appRoot, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Log(ex, $"Failed to validate path {path}");
+                return false;
+            }
+        }
+
+        private static bool GamesTableExists(SqliteConnection connection)
+        {
+            using var command = new SqliteCommand(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Games'",
+                connection);
+            long count = (long)command.ExecuteScalar()!;
+
+            return count > 0;
+        }
+
+        private static void DeleteContentRoot()
+        {
+            DeleteAppDirectory(AppPaths.ContentDirectory);
         }
     }
 }

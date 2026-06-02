@@ -1,9 +1,9 @@
-﻿<Application x:Class="HentaiVirus.App"
+<Application x:Class="HentaiVirus.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HentaiVirus"
-             StartupUri="MainWindow.xaml">
+             StartupUri="UI/MainWindow.xaml">
     <Application.Resources>
-         
+
     </Application.Resources>
 </Application>
