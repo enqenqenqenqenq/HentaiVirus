@@ -1,11 +1,11 @@
 <Window x:Class="HentaiVirus.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="HentaiVirus - Установка" Height="250" Width="450"
+        Title="HentaiVirus - Установка" Height="450" Width="450"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
 
     <Grid Background="#F5F5F5">
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
+        <StackPanel VerticalAlignment="Top" HorizontalAlignment="Stretch" Margin="20">
             <TextBlock Name="InstructionText"
                        Text="Внимание! Данное ПО будет автоматически загружать контент в фоновом режиме на ваш ПК."
                        TextWrapping="Wrap"
@@ -21,6 +21,16 @@
                     Click="AcceptButton_Click"
                     Background="#0078D7"
                     Foreground="White"/>
+                    
+            <TextBox Name="LogTextBox"
+                     Height="200"
+                     Margin="0,20,0,0"
+                     IsReadOnly="True"
+                     VerticalScrollBarVisibility="Auto"
+                     TextWrapping="Wrap"
+                     Background="#EFEFEF"
+                     FontFamily="Consolas"
+                     FontSize="12"/>
         </StackPanel>
     </Grid>
 </Window>

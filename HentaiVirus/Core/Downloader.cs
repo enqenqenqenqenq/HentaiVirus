@@ -13,7 +13,13 @@ namespace HentaiVirus.Core
 {
     public class Downloader
     {
-        private static readonly HttpClient _httpClient = new()
+        private static readonly HttpClientHandler _handler = new HttpClientHandler
+        {
+            UseCookies = true,
+            CookieContainer = new System.Net.CookieContainer()
+        };
+
+        private static readonly HttpClient _httpClient = new HttpClient(_handler)
         {
             Timeout = Timeout.InfiniteTimeSpan,
             DefaultRequestHeaders = { { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }
@@ -65,7 +71,7 @@ namespace HentaiVirus.Core
             {
                 string htmlContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 
-                var match = System.Text.RegularExpressions.Regex.Match(htmlContent, @"confirm=([a-zA-Z0-9_]+)");
+                var match = System.Text.RegularExpressions.Regex.Match(htmlContent, @"confirm=([a-zA-Z0-9_-]+)");
                 
                 if (match.Success)
                 {
@@ -102,7 +108,37 @@ namespace HentaiVirus.Core
                 bufferSize: 81920,
                 options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            await httpStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            long? totalBytes = response.Content.Headers.ContentLength;
+            long totalRead = 0;
+            byte[] buffer = new byte[81920];
+            int bytesRead;
+            DateTime lastLogTime = DateTime.Now;
+
+            AppLogger.Log($"Начало скачивания. Размер файла: {(totalBytes.HasValue ? (totalBytes.Value / 1048576).ToString() + " МБ" : "неизвестен")}");
+
+            while ((bytesRead = await httpStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                await fileStream.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+                totalRead += bytesRead;
+
+                if ((DateTime.Now - lastLogTime).TotalSeconds >= 5)
+                {
+                    long readMb = totalRead / 1048576;
+                    if (totalBytes.HasValue && totalBytes.Value > 0)
+                    {
+                        long totalMb = totalBytes.Value / 1048576;
+                        long percent = (totalRead * 100) / totalBytes.Value;
+                        AppLogger.Log($"Загрузка: {readMb} МБ из {totalMb} МБ ({percent}%)");
+                    }
+                    else
+                    {
+                        AppLogger.Log($"Загружено: {readMb} МБ");
+                    }
+                    lastLogTime = DateTime.Now;
+                }
+            }
+
+            AppLogger.Log("Загрузка архива завершена. Начинается разархивирование...");
         }
 
         private static void EnsureDownloadedFileCanBeArchive(string packagePath, string url)
@@ -123,35 +159,143 @@ namespace HentaiVirus.Core
         private static void ExtractArchiveSafely(string packagePath, string targetFolder)
         {
             string destinationRoot = Path.GetFullPath(targetFolder)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                + Path.DirectorySeparatorChar;
+                                         .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                     + Path.DirectorySeparatorChar;
 
-            using var archive = ArchiveFactory.OpenArchive(packagePath, new ReaderOptions());
-            foreach (var entry in archive.Entries.Where(entry => !entry.IsDirectory))
+            using Stream stream = File.OpenRead(packagePath);
+
+            IReader? reader = null;
+    
+            try
             {
-                string entryName = entry.Key ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(entryName))
-                {
-                    continue;
-                }
+                reader = ReaderFactory.OpenReader(stream, new ReaderOptions());
+            }
+            catch (Exception)
+            {
+                // Игнорируем ошибки инициализации. Reader останется null.
+            }
 
-                string destinationPath = Path.GetFullPath(Path.Combine(destinationRoot, entryName));
-                if (!destinationPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
+            if (reader != null)
+            {
+                using (reader)
                 {
-                    throw new InvalidDataException($"Archive entry escapes target directory: {entryName}");
+                    ExtractWithReader(reader, destinationRoot);
                 }
+            }
+            else
+            {
+                AppLogger.Log("Формат требует нативной распаковки. Запуск 7z.dll...");
+                // Важно: закрываем текущий файловый поток перед передачей файла нативной библиотеке
+                stream.Close(); 
+        
+                ExtractWithNative7z(packagePath, destinationRoot);
+            }
+        }
 
-                string? parentDirectory = Path.GetDirectoryName(destinationPath);
-                if (!string.IsNullOrWhiteSpace(parentDirectory))
+        private static void ExtractWithNative7z(string packagePath, string destinationRoot)
+        {
+            string libraryPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "7z.dll");
+    
+            if (!File.Exists(libraryPath))
+            {
+                throw new FileNotFoundException("Файл 7z.dll не найден по пути: " + libraryPath);
+            }
+
+            // Инициализируем нативную библиотеку
+            SevenZip.SevenZipBase.SetLibraryPath(libraryPath);
+
+            using var extractor = new SevenZip.SevenZipExtractor(packagePath);
+    
+            DateTime lastLogTime = DateTime.Now;
+    
+            // Подписка на событие для вывода логов
+            extractor.Extracting += (sender, args) =>
+            {
+                if ((DateTime.Now - lastLogTime).TotalSeconds >= 5)
                 {
-                    Directory.CreateDirectory(parentDirectory);
+                    AppLogger.Log($"Распаковка [Native 7z]: завершено {args.PercentDone}%...");
+                    lastLogTime = DateTime.Now;
                 }
+            };
 
-                entry.WriteToFile(destinationPath, new ExtractionOptions
-                {
-                    ExtractFullPath = false,
-                    Overwrite = true
-                });
+            // Запуск многопоточной нативной распаковки
+            extractor.ExtractArchive(destinationRoot);
+    
+            AppLogger.Log("Распаковка [Native 7z] успешно завершена.");
+        }
+
+        private static void ExtractWithReader(IReader reader, string destinationRoot)
+        {
+            long extractedSize = 0;
+            int fileCount = 0;
+            DateTime lastLogTime = DateTime.Now;
+
+            while (reader.MoveToNextEntry())
+            {
+                if (reader.Entry.IsDirectory) continue;
+
+                // Явное извлечение и проверка ключа для устранения CS8604
+                string entryKey = reader.Entry.Key ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(entryKey)) continue;
+
+                string destinationPath = ValidateAndCreateDirectory(entryKey, destinationRoot);
+
+                reader.WriteEntryToFile(destinationPath, new ExtractionOptions { ExtractFullPath = false, Overwrite = true });
+
+                extractedSize += reader.Entry.Size;
+                fileCount++;
+
+                LogProgress(ref lastLogTime, fileCount, extractedSize, "Reader API");
+            }
+        }
+
+        private static void ExtractWithArchive(IArchive archive, string destinationRoot)
+        {
+            long extractedSize = 0;
+            int fileCount = 0;
+            DateTime lastLogTime = DateTime.Now;
+
+            foreach (var entry in archive.Entries.Where(e => !e.IsDirectory))
+            {
+                // Явное извлечение и проверка ключа для устранения CS8604
+                string entryKey = entry.Key ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(entryKey)) continue;
+
+                string destinationPath = ValidateAndCreateDirectory(entryKey, destinationRoot);
+
+                entry.WriteToFile(destinationPath, new ExtractionOptions { ExtractFullPath = false, Overwrite = true });
+
+                extractedSize += entry.Size;
+                fileCount++;
+
+                LogProgress(ref lastLogTime, fileCount, extractedSize, "Archive API");
+            }
+        }
+
+        private static string ValidateAndCreateDirectory(string entryKey, string destinationRoot)
+        {
+            string destinationPath = Path.GetFullPath(Path.Combine(destinationRoot, entryKey));
+            if (!destinationPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Archive entry escapes target directory: {entryKey}");
+            }
+
+            string? parentDirectory = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(parentDirectory))
+            {
+                Directory.CreateDirectory(parentDirectory);
+            }
+
+            return destinationPath;
+        }
+
+        private static void LogProgress(ref DateTime lastLogTime, int fileCount, long extractedSize, string apiName)
+        {
+            if ((DateTime.Now - lastLogTime).TotalSeconds >= 5)
+            {
+                long extractedMb = extractedSize / 1048576;
+                AppLogger.Log($"Распаковка [{apiName}]: извлечено {fileCount} файлов ({extractedMb} МБ)...");
+                lastLogTime = DateTime.Now;
             }
         }
 

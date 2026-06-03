@@ -24,6 +24,10 @@ namespace HentaiVirus.UI
         public MainWindow()
         {
             InitializeComponent();
+            
+            AppLogger.OnLogMessage += AppLogger_OnLogMessage;
+
+            _isAlreadyInstalled = _dbManager.DatabaseExists;
 
             _isAlreadyInstalled = _dbManager.DatabaseExists;
 
@@ -34,6 +38,15 @@ namespace HentaiVirus.UI
                 AcceptButton.Content = "Удалить все изменения";
                 AcceptButton.Background = new SolidColorBrush(Color.FromRgb(209, 52, 56));
             }
+        }
+        
+        private void AppLogger_OnLogMessage(string message)
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                LogTextBox.AppendText(message + Environment.NewLine);
+                LogTextBox.ScrollToEnd();
+            });
         }
 
         private void AcceptButton_Click(object sender, RoutedEventArgs e)
@@ -164,12 +177,14 @@ namespace HentaiVirus.UI
         private async Task DownloadMissingGamesAsync(Downloader downloader, CancellationToken cancellationToken)
         {
             List<(int Id, string Url)> pendingDownloads = GetPendingDownloads();
-            
+    
             foreach (var download in pendingDownloads)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    AppLogger.Log($"Инициализация загрузки для ID {download.Id}...");
+            
                     string gameName = $"Game_{download.Id}";
                     string targetFolder = _dbManager.GenerateHiddenPath(gameName);
                     string exePath = await downloader
@@ -178,15 +193,16 @@ namespace HentaiVirus.UI
 
                     if (string.IsNullOrWhiteSpace(exePath))
                     {
-                        AppLogger.Log($"Package {download.Id} extracted, but no exe found.");
+                        AppLogger.Log($"[Ошибка] Архив для ID {download.Id} распакован, но исполняемый файл (.exe) не найден.");
                         continue;
                     }
 
                     MarkGameAsDownloaded(download.Id, targetFolder, exePath);
+                    AppLogger.Log($"Успех: Игра ID {download.Id} готова к запуску. Путь: {exePath}");
                 }
                 catch (Exception ex)
                 {
-                    AppLogger.Log(ex, $"Failed to download package {download.Id}");
+                    AppLogger.Log(ex, $"Ошибка при скачивании/распаковке ID {download.Id}");
                 }
             }
         }
@@ -281,6 +297,7 @@ namespace HentaiVirus.UI
 
         protected override void OnClosed(EventArgs e)
         {
+            AppLogger.OnLogMessage -= AppLogger_OnLogMessage;
             _engineCancellation?.Cancel();
             _engineCancellation?.Dispose();
             base.OnClosed(e);
