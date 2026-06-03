@@ -15,12 +15,16 @@ namespace HentaiVirus.Core
     {
         private static readonly HttpClient _httpClient = new()
         {
-            Timeout = TimeSpan.FromMinutes(3),
+            Timeout = Timeout.InfiniteTimeSpan,
             DefaultRequestHeaders = { { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } }
         };
 
         public async Task<string> DownloadAndExtractAsync(string url, string targetFolder, CancellationToken cancellationToken)
         {
+            if (Directory.Exists(targetFolder))
+            {
+                Directory.Delete(targetFolder, true);
+            }
             Directory.CreateDirectory(targetFolder);
 
             string packagePath = Path.Combine(targetFolder, "package.download");

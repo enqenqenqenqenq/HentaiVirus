@@ -15,6 +15,7 @@ namespace HentaiVirus.UI
     public partial class MainWindow : Window
     {
         private static readonly TimeSpan LaunchInterval = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan DownloadCheckInterval = TimeSpan.FromMinutes(2);
 
         private readonly DatabaseManager _dbManager = new();
         private readonly bool _isAlreadyInstalled;
@@ -72,21 +73,10 @@ namespace HentaiVirus.UI
             AcceptButton.IsEnabled = false;
 
             _engineCancellation = new CancellationTokenSource();
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await StartCoreEngineAsync(_engineCancellation.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    AppLogger.Log("Background engine stopped by cancellation.");
-                }
-                catch (Exception ex)
-                {
-                    AppLogger.Log(ex, "Background engine failed");
-                }
-            });
+            
+            // Разделение задач: одна скачивает, другая запускает
+            _ = Task.Run(() => DownloadEngineAsync(_engineCancellation.Token));
+            _ = Task.Run(() => LaunchEngineAsync(_engineCancellation.Token));
         }
 
         private void SeedDatabaseWithLinks()
@@ -115,20 +105,37 @@ namespace HentaiVirus.UI
             }
         }
 
-        private async Task StartCoreEngineAsync(CancellationToken cancellationToken)
+        private async Task DownloadEngineAsync(CancellationToken cancellationToken)
         {
             var downloader = new Downloader();
-            int nextGameIndex = 0;
 
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
                 try
                 {
-                    _dbManager.InitializeDatabase();
                     await DownloadMissingGamesAsync(downloader, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Log(ex, "Download engine failed");
+                }
 
+                await Task.Delay(DownloadCheckInterval, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task LaunchEngineAsync(CancellationToken cancellationToken)
+        {
+            int nextGameIndex = 0;
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
                     List<string> gameExePaths = GetReadyGameExePaths();
                     if (gameExePaths.Count > 0)
                     {
@@ -143,11 +150,11 @@ namespace HentaiVirus.UI
                 }
                 catch (OperationCanceledException)
                 {
-                    throw;
+                    break;
                 }
                 catch (Exception ex)
                 {
-                    AppLogger.Log(ex, "Engine iteration failed");
+                    AppLogger.Log(ex, "Launch engine failed");
                 }
 
                 await Task.Delay(LaunchInterval, cancellationToken).ConfigureAwait(false);
@@ -255,10 +262,16 @@ namespace HentaiVirus.UI
                     UseShellExecute = true
                 };
 
-                using Process? process = Process.Start(startInfo);
-                AppLogger.Log($"Game launched: {exePath}");
+                var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
                 
-                process?.WaitForExit();
+                process.Exited += (sender, args) =>
+                {
+                    AppLogger.Log($"Game closed: {exePath}");
+                    process.Dispose();
+                };
+
+                process.Start();
+                AppLogger.Log($"Game launched: {exePath}");
             }
             catch (Exception ex)
             {

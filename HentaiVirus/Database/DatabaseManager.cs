@@ -37,7 +37,8 @@ namespace HentaiVirus.Database
                     TargetDirectory TEXT NOT NULL,
                     ExePath TEXT NOT NULL,
                     IsDownloaded INTEGER DEFAULT 0
-                );";
+                );
+                CREATE INDEX IF NOT EXISTS IDX_Games_IsDownloaded ON Games(IsDownloaded);";
 
             using var command = new SqliteCommand(createTableQuery, connection);
             command.ExecuteNonQuery();
@@ -80,8 +81,19 @@ namespace HentaiVirus.Database
                             var runningProcesses = Process.GetProcessesByName(processName);
                             foreach (var p in runningProcesses)
                             {
-                                try { p.Kill(); p.WaitForExit(); } 
-                                catch (Exception ex) { AppLogger.Log(ex, $"Failed to kill process {processName}"); }
+                                try 
+                                { 
+                                    p.Kill(); 
+                                    p.WaitForExit(3000); 
+                                } 
+                                catch (Exception ex) 
+                                { 
+                                    AppLogger.Log(ex, $"Failed to kill process {processName}"); 
+                                }
+                                finally
+                                {
+                                    p.Dispose();
+                                }
                             }
                         }
 
